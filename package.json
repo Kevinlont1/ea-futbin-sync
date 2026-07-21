@@ -1,0 +1,16 @@
+{
+  "name": "ea-futbin-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Syncs EA FC Ultimate Team objective progress to Futbin.",
+  "main": "sync.js",
+  "scripts": {
+    "open": "node open-chrome.js",
+    "setup": "node setup.js",
+    "start": "node sync.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}

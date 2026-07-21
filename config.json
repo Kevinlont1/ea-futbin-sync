@@ -1,0 +1,6 @@
+{
+  "ea_url": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+  "futbin_url": "https://www.futbin.com/26/objectives",
+  "headless": false,
+  "chrome_debug_port": 9222
+}
