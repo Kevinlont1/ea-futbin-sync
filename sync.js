@@ -25,11 +25,24 @@ async function main() {
     throw new Error('cookies.json not found. Run "npm run setup" first to save your session.');
   }
 
-  console.log(`Launching Chromium (headless: ${!!config.headless}) ...`);
-  const browser = await chromium.launch({ headless: !!config.headless });
+  console.log(`Launching Chrome (headless: ${!!config.headless}) ...`);
+  // Futbin sits behind bot-detection that fingerprints Playwright's bundled
+  // Chromium (and its automation traits) and answers with a custom 403 page
+  // even when a valid, logged-in session cookie is presented. Launching the
+  // user's real installed Chrome (channel: 'chrome') instead of the bundled
+  // Chromium, plus hiding the obvious automation flag, is enough to pass —
+  // EA's webapp doesn't do this kind of check, which is why only Futbin 403s.
+  const browser = await chromium.launch({
+    headless: !!config.headless,
+    channel: 'chrome',
+    args: ['--disable-blink-features=AutomationControlled'],
+  });
 
   try {
     const context = await browser.newContext({ storageState: COOKIES_PATH });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
 
     const eaPage = await context.newPage();
     console.log(`Opening EA webapp: ${config.ea_url}`);

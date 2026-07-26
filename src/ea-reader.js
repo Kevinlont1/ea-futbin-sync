@@ -1,17 +1,17 @@
 // Reads objective progress from the EA FC Ultimate Team web app.
 //
-// The web app is a heavy client-rendered SPA, so this file leans on
-// accessible-name/text locators (role + name) rather than CSS class names,
-// since EA's build hashes classes on every release but rarely changes the
-// visible copy. If EA changes the layout, this is the file to fix — the
-// SELECTORS block below is the place to start.
+// Selectors below were captured from the live web app's DOM (its component
+// classes, e.g. "ut-objective-group-view", are semantic and not hashed per
+// build, unlike a lot of SPAs — so these should stay valid across most
+// content updates). If EA reworks the Objectives UI, this is the file to
+// fix — start by re-checking the SELECTORS block.
 
 const CATEGORIES = [
   'North America',
   'South America',
   'Africa',
   'Europe',
-  'Asia+Oceania',
+  'Asia + Oceania',
   'Journey of Nations',
   'Milestones',
   'Seasonal',
@@ -21,21 +21,23 @@ const CATEGORIES = [
 ];
 
 const SELECTORS = {
-  // Left-hand nav entry that opens the Objectives hub.
-  objectivesNavItem: { role: 'link', name: /objectives/i },
-  // Tab/button for a single category inside the Objectives hub.
-  categoryTab: (name) => ({ role: 'tab', name, exact: false }),
-  // A single objective group card within a category panel.
-  groupCard: '[class*="objective"][class*="group"], [class*="objective-group"], [class*="objectiveCard"]',
-  // Badge/label shown on a fully-claimed group.
-  claimedBadge: { role: 'button', name: /claimed/i },
-  // Individual task row once a group is expanded.
-  taskRow: '[class*="task"], [class*="requirement"], li',
-  // Checkmark / completed indicator within a task row.
-  doneIndicator: '[class*="complete"], [class*="checkmark"], [class*="done"], svg[class*="check"]',
+  // Card on the Home screen that opens the Objectives/FC Hub area.
+  fcHubCard: 'FC Hub',
+  // Horizontal tab strip inside FC Hub (FC Season, Seasonal, North America, ...).
+  categoryTabs: '.menu-container',
+  categoryTab: '.ea-filter-bar-item-view',
+  // One objective group card (e.g. "Mexico", "Weekly Objectives").
+  groupCard: '.ut-objective-group-view',
+  groupTitle: '.ut-objective-group-view--title',
+  // A group card gets this class once its rewards have been claimed.
+  redeemedClass: 'redeemed',
+  // Individual task row within a group card.
+  taskRow: '.ut-objective-task-view',
+  taskTitle: '.ut-objective-task-view--title',
+  taskProgress: '.ut-objective-task-view--progress',
 };
 
-async function safeText(locator) {
+async function safeInnerText(locator) {
   try {
     return (await locator.innerText()).trim();
   } catch {
@@ -43,68 +45,58 @@ async function safeText(locator) {
   }
 }
 
-async function isGroupClaimed(groupCard) {
-  const badge = groupCard.getByRole(SELECTORS.claimedBadge.role, { name: SELECTORS.claimedBadge.name });
-  return (await badge.count()) > 0;
+function parseDone(progressText, fallback) {
+  const match = progressText.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) return fallback;
+  return Number(match[1]) >= Number(match[2]);
 }
 
-async function readTasksFromExpandedGroup(page, groupCard) {
-  await groupCard.click();
-  // Expanding a group triggers an animation/fetch in the EA webapp — give it
-  // a moment rather than racing the DOM.
-  await page.waitForTimeout(500);
+async function readGroup(groupCard) {
+  const name = await safeInnerText(groupCard.locator(SELECTORS.groupTitle));
+  if (!name) return null;
 
-  const rows = page.locator(SELECTORS.taskRow);
-  const count = await rows.count();
+  const className = (await groupCard.getAttribute('class')) || '';
+  const claimed = className.includes(SELECTORS.redeemedClass);
+
+  const taskRows = groupCard.locator(SELECTORS.taskRow);
+  const taskCount = await taskRows.count();
   const tasks = [];
 
-  for (let i = 0; i < count; i++) {
-    const row = rows.nth(i);
-    const name = await safeText(row);
-    if (!name) continue;
-
-    const doneCount = await row.locator(SELECTORS.doneIndicator).count();
-    tasks.push({ name, done: doneCount > 0 });
+  for (let i = 0; i < taskCount; i++) {
+    const row = taskRows.nth(i);
+    const taskName = await safeInnerText(row.locator(SELECTORS.taskTitle));
+    if (!taskName) continue;
+    const progressText = await safeInnerText(row.locator(SELECTORS.taskProgress));
+    tasks.push({ name: taskName, done: parseDone(progressText, claimed) });
   }
 
-  return tasks;
+  return { name, claimed, tasks };
 }
 
 async function readCategory(page, categoryName) {
-  const tab = page.getByRole(
-    SELECTORS.categoryTab(categoryName).role,
-    { name: SELECTORS.categoryTab(categoryName).name }
-  );
+  const tab = page.locator(SELECTORS.categoryTabs).getByText(categoryName, { exact: true });
 
-  if ((await tab.count()) === 0) {
+  try {
+    await tab.first().waitFor({ state: 'visible', timeout: 10000 });
+  } catch {
     console.warn(`  [skip] Category "${categoryName}" not found on the page.`);
     return null;
   }
 
   await tab.first().click();
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(800);
 
   const groupCards = page.locator(SELECTORS.groupCard);
   const groupCount = await groupCards.count();
   const groups = [];
 
   for (let i = 0; i < groupCount; i++) {
-    const card = groupCards.nth(i);
-    const name = await safeText(card);
-    if (!name) continue;
-
-    const claimed = await isGroupClaimed(card);
-
-    let tasks = [];
-    if (!claimed) {
-      try {
-        tasks = await readTasksFromExpandedGroup(page, card);
-      } catch (err) {
-        console.warn(`  [warn] Could not read tasks for group "${name}": ${err.message}`);
-      }
+    try {
+      const group = await readGroup(groupCards.nth(i));
+      if (group && group.tasks.length > 0) groups.push(group);
+    } catch (err) {
+      console.warn(`  [warn] Could not read a group in "${categoryName}": ${err.message}`);
     }
-
-    groups.push({ name, claimed, tasks });
   }
 
   return { category: categoryName, groups };
@@ -116,12 +108,17 @@ async function readCategory(page, categoryName) {
  * @param {import('playwright').Page} page - page already navigated to ea_url and logged in.
  */
 async function readObjectives(page) {
-  console.log('Opening Objectives hub...');
-  const objectivesLink = page.getByRole(SELECTORS.objectivesNavItem.role, { name: SELECTORS.objectivesNavItem.name });
-  if ((await objectivesLink.count()) > 0) {
-    await objectivesLink.first().click();
-    await page.waitForTimeout(1000);
+  console.log('Opening FC Hub...');
+  // The webapp plays an intro animation before Home renders, so the "FC Hub"
+  // card can take a while to show up — wait for it instead of checking once.
+  const fcHub = page.getByText(SELECTORS.fcHubCard, { exact: true });
+  try {
+    await fcHub.first().waitFor({ state: 'visible', timeout: 30000 });
+  } catch {
+    throw new Error('Could not find the "FC Hub" card on the EA webapp home screen. Is the page logged in and fully loaded?');
   }
+  await fcHub.first().click();
+  await page.waitForTimeout(1500);
 
   const results = [];
   for (const categoryName of CATEGORIES) {

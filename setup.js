@@ -43,15 +43,29 @@ function findPage(browser, targetUrl) {
   return null;
 }
 
-async function readLocalStorage(page) {
-  return page.evaluate(() => {
-    const entries = [];
-    for (let i = 0; i < window.localStorage.length; i++) {
-      const name = window.localStorage.key(i);
-      entries.push({ name, value: window.localStorage.getItem(name) });
+// Heavy SPAs like the EA webapp keep navigating/redirecting client-side even
+// after the page looks loaded, which tears down the JS execution context
+// mid-evaluate. Wait for things to settle and retry a few times rather than
+// failing on the first navigation we race against.
+async function readLocalStorage(page, retries = 5) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+      return await page.evaluate(() => {
+        const entries = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const name = window.localStorage.key(i);
+          entries.push({ name, value: window.localStorage.getItem(name) });
+        }
+        return entries;
+      });
+    } catch (err) {
+      const isNavigationRace = /Execution context was destroyed|context or browser has been closed/i.test(err.message);
+      if (!isNavigationRace || attempt === retries) throw err;
+      console.warn(`  [retry] Page was still navigating, retrying localStorage read (${attempt}/${retries})...`);
+      await page.waitForTimeout(1000);
     }
-    return entries;
-  });
+  }
 }
 
 async function main() {
